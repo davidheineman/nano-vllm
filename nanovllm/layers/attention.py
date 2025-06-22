@@ -55,25 +55,41 @@ class Attention(nn.Module):
         self.num_kv_heads = num_kv_heads
         self.k_cache = self.v_cache = torch.tensor([])
 
-    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
-        o: torch.Tensor
-        q = q.view(-1, self.num_heads, self.head_dim)
-        k = k.view(-1, self.num_kv_heads, self.head_dim)
-        v = v.view(-1, self.num_kv_heads, self.head_dim)
-        context = get_context()
-        k_cache = self.k_cache
-        v_cache = self.v_cache
-        store_kvcache(k, v, k_cache, v_cache, context.slot_mapping)
-        if context.is_prefill:
-            if context.block_tables is not None:    # prefix cache
-                k, v = k_cache, v_cache
-            o = flash_attn_varlen_func(q, k, v,
-                                       max_seqlen_q=context.max_seqlen_q, cu_seqlens_q=context.cu_seqlens_q,
-                                       max_seqlen_k=context.max_seqlen_k, cu_seqlens_k=context.cu_seqlens_k,
-                                       softmax_scale=self.scale, causal=True, block_table=context.block_tables)
-        else:    # decode
-            o = flash_attn_with_kvcache(q.unsqueeze(1), k_cache, v_cache,
-                                        cache_seqlens=context.context_lens, block_table=context.block_tables, 
-                                        softmax_scale=self.scale, causal=True)
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, attention_mask: torch.Tensor | None = None):
+        if attention_mask is not None:
+            # Attention with no caching
+            q = q * self.scale
+
+            o: torch.Tensor
+            q = q.view(-1, self.num_heads, self.head_dim)
+            k = k.view(-1, self.num_kv_heads, self.head_dim)
+            v = v.view(-1, self.num_kv_heads, self.head_dim)
+
+            attn = torch.matmul(q, k.transpose(-2, -1))
+            attn = attn + attention_mask
+            attn = torch.softmax(attn, dim=-1)
+            o = torch.matmul(attn, v)
+        else:
+            o: torch.Tensor
+            q = q.view(-1, self.num_heads, self.head_dim)
+            k = k.view(-1, self.num_kv_heads, self.head_dim)
+            v = v.view(-1, self.num_kv_heads, self.head_dim)
+
+            context = get_context()
+            k_cache = self.k_cache 
+            v_cache = self.v_cache
+            store_kvcache(k, v, k_cache, v_cache, context.slot_mapping)
+            if context.is_prefill:
+                if context.block_tables is not None:    # prefix cache
+                    k, v = k_cache, v_cache
+                o = flash_attn_varlen_func(q, k, v,
+                                           max_seqlen_q=context.max_seqlen_q, cu_seqlens_q=context.cu_seqlens_q,
+                                           max_seqlen_k=context.max_seqlen_k, cu_seqlens_k=context.cu_seqlens_k,
+                                           softmax_scale=self.scale, block_table=context.block_tables)
+            else:    # decode
+                o = flash_attn_with_kvcache(q.unsqueeze(1), k_cache, v_cache,
+                                            cache_seqlens=context.context_lens, block_table=context.block_tables,
+                                            softmax_scale=self.scale)
+                
         o = o.view(-1, self.num_heads * self.head_dim)
         return o
