@@ -26,3 +26,23 @@ def load_model(model: nn.Module, path: str):
                     param = model.get_parameter(weight_name)
                     weight_loader = getattr(param, "weight_loader", default_weight_loader)
                     weight_loader(param, f.get_tensor(weight_name))
+
+
+def copy_weights(source_model: nn.Module, target_model: nn.Module):
+    packed_modules_mapping = getattr(target_model, "packed_modules_mapping", {})
+    for name, param in source_model.named_parameters():
+        for k in packed_modules_mapping:
+            if k in name:
+                v, shard_id = packed_modules_mapping[k]
+                target_name = name.replace(k, v)
+                target_param = target_model.get_parameter(target_name)
+                weight_loader = getattr(target_param, "weight_loader")
+                weight_loader(target_param, param.data, shard_id)
+                break
+        else:
+            try:
+                target_param = target_model.get_parameter(name)
+                weight_loader = getattr(target_param, "weight_loader", default_weight_loader)
+                weight_loader(target_param, param.data)
+            except AttributeError:
+                continue
