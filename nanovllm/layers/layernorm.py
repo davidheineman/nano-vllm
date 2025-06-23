@@ -2,48 +2,36 @@ import torch
 from torch import nn
 
 
-class RMSNorm(nn.Module):
+# TODO: I removed in-place operations from RMS norm (went from 490 -> 440 TPS)
 
-    def __init__(
-        self,
-        hidden_size: int,
-        eps: float = 1e-6,
-    ) -> None:
+class RMSNorm(nn.Module):
+    def __init__(self, hidden_size: int, eps: float = 1e-6) -> None:
         super().__init__()
         self.hidden_size = hidden_size
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(hidden_size))
 
-    @torch.compile
-    def rms_forward(
-        self,
-        x: torch.Tensor,
-    ) -> torch.Tensor:
+    def rms_forward(self, x: torch.Tensor) -> torch.Tensor:
         orig_dtype = x.dtype
-        x = x.to(torch.float32)
-        var = x.pow(2).mean(dim=-1, keepdim=True)
-        x.mul_(torch.rsqrt(var + self.eps))
-        x = x.to(orig_dtype).mul_(self.weight)
-        return x
+        x_f32 = x.to(torch.float32)
+        var = x_f32.pow(2).mean(dim=-1, keepdim=True)
+        x_norm = x_f32 * torch.rsqrt(var + self.eps)
+        x_norm = x_norm.to(orig_dtype) * self.weight
+        return x_norm
 
-    @torch.compile
     def add_rms_forward(
-        self,
-        x: torch.Tensor,
-        residual: torch.Tensor,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        self, x: torch.Tensor, residual: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         orig_dtype = x.dtype
-        x = x.to(torch.float32).add_(residual.to(torch.float32))
-        residual = x.to(orig_dtype)
-        var = x.pow(2).mean(dim=-1, keepdim=True)
-        x.mul_(torch.rsqrt(var + self.eps))
-        x = x.to(orig_dtype).mul_(self.weight)
-        return x, residual
+        x_f32 = x.to(torch.float32) + residual.to(torch.float32)
+        residual_out = x_f32.to(orig_dtype)
+        var = x_f32.pow(2).mean(dim=-1, keepdim=True)
+        x_norm = x_f32 * torch.rsqrt(var + self.eps)
+        x_norm = x_norm.to(orig_dtype) * self.weight
+        return x_norm, residual_out
 
     def forward(
-        self,
-        x: torch.Tensor,
-        residual: torch.Tensor | None = None,
+        self, x: torch.Tensor, residual: torch.Tensor | None = None
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         if residual is None:
             return self.rms_forward(x)

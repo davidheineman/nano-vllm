@@ -57,18 +57,36 @@ class Attention(nn.Module):
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, attention_mask: torch.Tensor | None = None):
         if attention_mask is not None:
-            # Attention with no caching
-            q = q * self.scale
-
-            o: torch.Tensor
+            # print(positions.shape) # torch.Size([492])
+            # print(hidden_states.shape) # torch.Size([492, 1024])
+            # print(q.shape, k.shape, v.shape) # torch.Size([511, 2048]) torch.Size([511, 1024]) torch.Size([511, 1024])
+            
             q = q.view(-1, self.num_heads, self.head_dim)
-            k = k.view(-1, self.num_kv_heads, self.head_dim)
+            k = k.view(-1, self.num_kv_heads, self.head_dim) 
             v = v.view(-1, self.num_kv_heads, self.head_dim)
 
-            attn = torch.matmul(q, k.transpose(-2, -1))
-            attn = attn + attention_mask
-            attn = torch.softmax(attn, dim=-1)
-            o = torch.matmul(attn, v)
+            num_key_value_groups = self.num_heads // self.num_kv_heads
+            k = k.unsqueeze(2).expand(-1, -1, num_key_value_groups, -1).reshape(-1, self.num_heads, self.head_dim)
+            v = v.unsqueeze(2).expand(-1, -1, num_key_value_groups, -1).reshape(-1, self.num_heads, self.head_dim)
+
+            attn_weights = torch.matmul(q, k.transpose(-2, -1)) * self.scale
+
+            # print(attention_mask.shape) # torch.Size([511])
+            # print(attn_weights.shape) # torch.Size([511, 16, 16])
+            # print(k.shape) # torch.Size([511, 16, 128])
+            # print(q.shape) # torch.Size([511, 16, 128])
+            # print(v.shape) # torch.Size([511, 16, 128])
+            # print(self.num_heads) # 16
+            # print(self.head_dim) # 128
+
+            # attn_weights = attn_weights.masked_fill((attention_mask.unsqueeze(1).unsqueeze(1) == 0), float("-inf"))
+            attn_weights = attn_weights.masked_fill(attention_mask[None, None, :] == 0, float("-inf"))
+
+            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(q.dtype)
+            attn_weights = nn.functional.dropout(attn_weights, p=0.0, training=self.training)
+
+            o = torch.matmul(attn_weights, v)
+            o = o.contiguous()
         else:
             o: torch.Tensor
             q = q.view(-1, self.num_heads, self.head_dim)
